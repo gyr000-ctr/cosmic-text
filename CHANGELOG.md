@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Opt-in `colr` feature for COLRv0/COLRv1 + CPAL color glyph support. Color
+  glyphs are parsed through skrifa and rasterized to RGBA with zeno, including
+  solid fills, linear/radial/sweep gradients, transforms, clip glyphs/boxes
+  and all W3C composite/blend modes. `ColorGlyphCache` stores bitmaps keyed
+  by font, glyph, size, subpixel position, palette and foreground color, with
+  bounded entry count and memory limits. Cycles, excessive graph depth,
+  invalid gradients/transforms and oversized glyphs return
+  `ColorRasterError` so callers fall back to the monochrome outline or a
+  replacement glyph. The default feature set is unchanged.
+
 ## [0.19.0] - 2026-04-22
 
 ### Fixed

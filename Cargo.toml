@@ -31,6 +31,12 @@ unicode-linebreak = "0.1.5"
 unicode-script = "0.5.8"
 unicode-segmentation = "1.12.0"
 
+[dependencies.zeno]
+version = "0.3.3"
+default-features = false
+features = ["eval"]
+optional = true
+
 [dependencies.swash]
 version = "0.2.10"
 default-features = false
@@ -44,9 +50,12 @@ features = ["hardcoded-data"]
 
 [features]
 default = ["std", "swash", "fontconfig"]
+# COLRv0/COLRv1 + CPAL color glyph rasterization (RGBA). Opt-in: when
+# disabled, color glyphs keep using the existing swash/monochrome paths.
+colr = ["dep:zeno"]
 fontconfig = ["fontdb/fontconfig", "std"]
 monospace_fallback = []
-no_std = ["hashbrown", "dep:libm", "skrifa/libm", "core_maths", "swash?/libm", "harfrust/libm"]
+no_std = ["hashbrown", "dep:libm", "skrifa/libm", "core_maths", "swash?/libm", "harfrust/libm", "zeno?/libm"]
 peniko = []
 shape-run-cache = []
 std = [
@@ -58,6 +67,7 @@ std = [
     "swash?/std",
     "sys-locale",
     "unicode-bidi/std",
+    "zeno?/std",
 ]
 vi = ["modit", "syntect", "cosmic_undo_2"]
 wasm-web = ["sys-locale?/js"]
@@ -80,6 +90,7 @@ members = ["examples/*"]
 
 [dev-dependencies]
 tiny-skia = "0.11.4"
+font-test-data = "0.10.2"
 criterion = { version = "0.8.1", default-features = false, features = [
     "cargo_bench_support",
 ] }

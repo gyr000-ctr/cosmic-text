@@ -133,6 +133,11 @@ pub struct SwashCache {
     context: ScaleContext,
     pub image_cache: HashMap<CacheKey, Option<SwashImage>>,
     pub outline_command_cache: HashMap<CacheKey, Option<Box<[swash::zeno::Command]>>>,
+    /// Bounded cache for COLR/CPAL color glyphs, used when the `colr`
+    /// feature is enabled. Color glyphs are painted through skrifa+zeno
+    /// instead of the monochrome scaler; failures fall back transparently.
+    #[cfg(feature = "colr")]
+    color_cache: crate::ColorGlyphCache,
 }
 
 impl fmt::Debug for SwashCache {
@@ -148,6 +153,8 @@ impl SwashCache {
             context: ScaleContext::new(),
             image_cache: HashMap::default(),
             outline_command_cache: HashMap::default(),
+            #[cfg(feature = "colr")]
+            color_cache: crate::ColorGlyphCache::new(),
         }
     }
 
@@ -200,6 +207,27 @@ impl SwashCache {
         base: Color,
         mut f: F,
     ) {
+        // With the `colr` feature, try the COLR/CPAL color path first. A
+        // monochrome glyph returns `Ok(false)` and any malformed-font error
+        // is logged and handled by the swash fallback below, so rendering
+        // never regresses for non-color or broken color glyphs.
+        #[cfg(feature = "colr")]
+        {
+            match self.color_cache.with_pixels(
+                font_system,
+                cache_key,
+                crate::PaletteSelector::default_palette(),
+                base,
+                |x, y, color| f(x, y, color),
+            ) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(err) => {
+                    log::warn!("COLR color glyph rasterization failed, falling back: {err}");
+                }
+            }
+        }
+
         if let Some(image) = self.get_image(font_system, cache_key) {
             let x = image.placement.left;
             let y = -image.placement.top;

@@ -106,6 +106,11 @@ mod buffer_line;
 pub use self::cached::*;
 mod cached;
 
+#[cfg(feature = "colr")]
+pub use self::color_glyph::*;
+#[cfg(feature = "colr")]
+mod color_glyph;
+
 pub use self::glyph_cache::*;
 mod glyph_cache;
 
