@@ -270,7 +270,7 @@ fn shape_fallback(
             //TODO: color should not be related to shaping
             color_opt: attrs.color_opt,
             metadata: attrs.metadata,
-            cache_key_flags: override_fake_italic(attrs.cache_key_flags, font, &attrs),
+            cache_key_flags: override_cache_key_flags(attrs.cache_key_flags, font, &attrs),
             metrics_opt: attrs.metrics_opt.map(Into::into),
         });
     }
@@ -561,7 +561,7 @@ fn shape_skip(
                         + span_attrs
                             .letter_spacing_opt
                             .map_or(0.0, |spacing| spacing.0);
-                    glyph.cache_key_flags = override_fake_italic(
+                    glyph.cache_key_flags = override_cache_key_flags(
                         span_attrs.cache_key_flags,
                         fb_font.as_ref(),
                         &span_attrs,
@@ -619,7 +619,7 @@ fn shape_skip_glyphs(
                     glyph_id,
                     color_opt: attrs.color_opt,
                     metadata: attrs.metadata,
-                    cache_key_flags: override_fake_italic(attrs.cache_key_flags, font, &attrs),
+                    cache_key_flags: override_cache_key_flags(attrs.cache_key_flags, font, &attrs),
                     metrics_opt: attrs.metrics_opt.map(Into::into),
                 }
             }),
@@ -636,6 +636,31 @@ fn override_fake_italic(
     } else {
         cache_key_flags
     }
+}
+
+fn override_synthetic_bold(
+    cache_key_flags: CacheKeyFlags,
+    font: &Font,
+    attrs: &Attrs,
+) -> CacheKeyFlags {
+    let Some(synthetic_bold) = attrs.synthetic_bold else {
+        return cache_key_flags;
+    };
+    // A font that already renders at (or above) the requested weight,
+    // whether static or through its `wght` axis, is not emboldened.
+    if font.resolved_weight(attrs.weight).0 >= attrs.weight.0 {
+        return cache_key_flags;
+    }
+    cache_key_flags.with_synthetic_bold(synthetic_bold.strength())
+}
+
+fn override_cache_key_flags(
+    cache_key_flags: CacheKeyFlags,
+    font: &Font,
+    attrs: &Attrs,
+) -> CacheKeyFlags {
+    let cache_key_flags = override_fake_italic(cache_key_flags, font, attrs);
+    override_synthetic_bold(cache_key_flags, font, attrs)
 }
 
 /// A shaped glyph

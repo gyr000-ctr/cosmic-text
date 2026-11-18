@@ -2,6 +2,7 @@
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
 use rangemap::RangeMap;
@@ -245,6 +246,89 @@ pub enum UnderlineStyle {
     // TODO: Wavy
 }
 
+/// Synthetic (faux) bold configuration.
+///
+/// When set on [`Attrs`], glyphs whose matched font does not provide the
+/// requested [`Weight`] are emboldened at rasterization time by widening the
+/// outline stroke. This only affects rendering: glyph advances, line height
+/// and all other layout metrics are left untouched.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SyntheticBold {
+    /// `f32` bits of the strength in EM units
+    strength_bits: u32,
+}
+
+impl SyntheticBold {
+    /// The maximum allowed strength, in EM units
+    pub const MAX_STRENGTH: f32 = 0.2;
+    /// The default strength, in EM units
+    pub const DEFAULT_STRENGTH: f32 = 0.03;
+
+    /// Synthetic bold with the default strength
+    pub const fn new() -> Self {
+        Self {
+            strength_bits: Self::DEFAULT_STRENGTH.to_bits(),
+        }
+    }
+
+    /// Synthetic bold with a custom strength, in EM units.
+    ///
+    /// Returns [`SyntheticBoldError::StrengthOutOfRange`] if `strength` is
+    /// not in the range `(0.0, `[`SyntheticBold::MAX_STRENGTH]`]`.
+    pub const fn with_strength(strength: f32) -> Result<Self, SyntheticBoldError> {
+        if strength.is_nan() || strength <= 0.0 || strength > Self::MAX_STRENGTH {
+            return Err(SyntheticBoldError::StrengthOutOfRange { strength });
+        }
+        Ok(Self {
+            strength_bits: strength.to_bits(),
+        })
+    }
+
+    /// The strength in EM units
+    pub const fn strength(&self) -> f32 {
+        f32::from_bits(self.strength_bits)
+    }
+}
+
+impl Default for SyntheticBold {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Errors reported when configuring or rendering synthetic bold
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SyntheticBoldError {
+    /// The requested strength is outside the allowed range
+    StrengthOutOfRange {
+        /// The offending strength, in EM units
+        strength: f32,
+    },
+    /// The glyph has no outline pixels to embolden (e.g. a space)
+    EmptyGlyph {
+        /// The glyph that could not be emboldened
+        glyph_id: u16,
+    },
+}
+
+impl fmt::Display for SyntheticBoldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StrengthOutOfRange { strength } => write!(
+                f,
+                "synthetic bold strength {strength} is out of range (0.0, {}]",
+                SyntheticBold::MAX_STRENGTH
+            ),
+            Self::EmptyGlyph { glyph_id } => {
+                write!(f, "cannot synthesize bold for empty glyph {glyph_id}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SyntheticBoldError {}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct TextDecoration {
     pub underline: UnderlineStyle,
@@ -310,6 +394,9 @@ pub struct Attrs<'a> {
     pub letter_spacing_opt: Option<LetterSpacing>,
     pub font_features: FontFeatures,
     pub text_decoration: TextDecoration,
+    /// Synthetic bold, applied only when the matched font does not provide
+    /// the requested [`Attrs::weight`]
+    pub synthetic_bold: Option<SyntheticBold>,
 }
 
 impl<'a> Attrs<'a> {
@@ -329,6 +416,7 @@ impl<'a> Attrs<'a> {
             letter_spacing_opt: None,
             font_features: FontFeatures::new(),
             text_decoration: TextDecoration::new(),
+            synthetic_bold: None,
         }
     }
 
@@ -422,6 +510,13 @@ impl<'a> Attrs<'a> {
         self
     }
 
+    /// Set [`SyntheticBold`], emboldening glyphs at render time when the
+    /// matched font does not provide the requested weight
+    pub const fn synthetic_bold(mut self, synthetic_bold: SyntheticBold) -> Self {
+        self.synthetic_bold = Some(synthetic_bold);
+        self
+    }
+
     /// Check if this set of attributes can be shaped with another
     pub fn compatible(&self, other: &Self) -> bool {
         self.family == other.family
@@ -468,6 +563,7 @@ pub struct AttrsOwned {
     pub letter_spacing_opt: Option<LetterSpacing>,
     pub font_features: FontFeatures,
     pub text_decoration: TextDecoration,
+    pub synthetic_bold: Option<SyntheticBold>,
 }
 
 impl AttrsOwned {
@@ -484,6 +580,7 @@ impl AttrsOwned {
             && self.metrics_opt == other.metrics_opt
             && self.letter_spacing_opt == other.letter_spacing_opt
             && self.font_features == other.font_features
+            && self.synthetic_bold == other.synthetic_bold
     }
 
     pub fn new(attrs: &Attrs) -> Self {
@@ -499,6 +596,7 @@ impl AttrsOwned {
             letter_spacing_opt: attrs.letter_spacing_opt,
             font_features: attrs.font_features.clone(),
             text_decoration: attrs.text_decoration,
+            synthetic_bold: attrs.synthetic_bold,
         }
     }
 
@@ -515,6 +613,7 @@ impl AttrsOwned {
             letter_spacing_opt: self.letter_spacing_opt,
             font_features: self.font_features.clone(),
             text_decoration: self.text_decoration,
+            synthetic_bold: self.synthetic_bold,
         }
     }
 }

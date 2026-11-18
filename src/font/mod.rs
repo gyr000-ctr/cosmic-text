@@ -58,6 +58,10 @@ pub struct Font {
     id: fontdb::ID,
     monospace_fallback: Option<FontMonospaceFallback>,
     pub(crate) italic_or_oblique: bool,
+    /// The weight this face is registered at in the database
+    pub(crate) weight: fontdb::Weight,
+    /// The `wght` axis range, if this is a variable font
+    pub(crate) variable_weight_range: Option<(u16, u16)>,
 }
 
 impl fmt::Debug for Font {
@@ -77,6 +81,16 @@ impl Font {
         self.monospace_fallback
             .as_ref()
             .and_then(|x| x.monospace_em_width)
+    }
+
+    /// The weight this font actually renders at when `requested` is asked
+    /// for: the requested weight clamped into the `wght` axis range for
+    /// variable fonts, or the face's registered weight for static fonts.
+    pub(crate) fn resolved_weight(&self, requested: fontdb::Weight) -> fontdb::Weight {
+        match self.variable_weight_range {
+            Some((min, max)) => fontdb::Weight(requested.0.clamp(min, max)),
+            None => self.weight,
+        }
     }
 
     pub fn scripts(&self) -> &[[u8; 4]] {
@@ -145,6 +159,16 @@ impl Font {
             .axes()
             .location([(Tag::new(b"wght"), weight.0 as f32)]);
         let metrics = font_ref.metrics(Size::unscaled(), &location);
+
+        let variable_weight_range = font_ref
+            .axes()
+            .get_by_tag(Tag::new(b"wght"))
+            .map(|axis| {
+                (
+                    crate::math::roundf(axis.min_value()) as u16,
+                    crate::math::roundf(axis.max_value()) as u16,
+                )
+            });
 
         let monospace_fallback = if cfg!(feature = "monospace_fallback") {
             (|| {
@@ -239,6 +263,8 @@ impl Font {
             .ok()?,
             data: FontData::new(Blob::new(data), info.index),
             italic_or_oblique: info.style == Style::Italic || info.style == Style::Oblique,
+            weight: info.weight,
+            variable_weight_range,
         })
     }
 }

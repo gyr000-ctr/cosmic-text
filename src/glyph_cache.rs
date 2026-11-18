@@ -11,6 +11,40 @@ bitflags::bitflags! {
         const DISABLE_HINTING = 2;
         /// Render as a pixel font
         const PIXEL_FONT = 4;
+        /// Embolden the outline to synthesize bold. The strength is packed
+        /// into the upper bits, see [`CacheKeyFlags::with_synthetic_bold`]
+        const FAKE_BOLD = 8;
+    }
+}
+
+impl CacheKeyFlags {
+    // Bits 8..=23 hold the synthetic-bold strength in EM units, quantized
+    // to 1/4096, so that cache keys distinguish different strengths.
+    const SYNTHETIC_BOLD_STRENGTH_SHIFT: u32 = 8;
+    const SYNTHETIC_BOLD_STRENGTH_MASK: u32 = 0xFFFF << Self::SYNTHETIC_BOLD_STRENGTH_SHIFT;
+    const SYNTHETIC_BOLD_STRENGTH_SCALE: f32 = 4096.0;
+
+    /// Set [`CacheKeyFlags::FAKE_BOLD`] and pack `strength_em` (in EM units)
+    /// into the flag bits
+    pub fn with_synthetic_bold(self, strength_em: f32) -> Self {
+        let quantized = crate::math::roundf(strength_em * Self::SYNTHETIC_BOLD_STRENGTH_SCALE)
+            .max(1.0) as u32;
+        let bits = (self.bits() & !Self::SYNTHETIC_BOLD_STRENGTH_MASK)
+            | (quantized << Self::SYNTHETIC_BOLD_STRENGTH_SHIFT)
+            | Self::FAKE_BOLD.bits();
+        Self::from_bits_retain(bits)
+    }
+
+    /// The synthetic-bold strength in EM units, or `None` if
+    /// [`CacheKeyFlags::FAKE_BOLD`] is not set
+    pub fn synthetic_bold_strength(self) -> Option<f32> {
+        if self.contains(Self::FAKE_BOLD) {
+            let quantized = (self.bits() & Self::SYNTHETIC_BOLD_STRENGTH_MASK)
+                >> Self::SYNTHETIC_BOLD_STRENGTH_SHIFT;
+            Some(quantized as f32 / Self::SYNTHETIC_BOLD_STRENGTH_SCALE)
+        } else {
+            None
+        }
     }
 }
 

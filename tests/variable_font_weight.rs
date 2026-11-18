@@ -48,3 +48,47 @@ fn variable_font_all_weights_match() {
         }
     }
 }
+
+/// When a variable font provides the requested weight through its `wght`
+/// axis, synthetic bold must stay disabled: the real weight is rendered
+/// by the font itself.
+#[test]
+fn variable_font_real_weight_disables_synthetic_bold() {
+    use cosmic_text::{CacheKeyFlags, SyntheticBold};
+
+    let repo_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let fonts_path = PathBuf::from(&repo_dir).join("fonts");
+
+    let mut font_system = FontSystem::new();
+    font_system
+        .db_mut()
+        .load_font_data(std::fs::read(fonts_path.join("InterVariable.ttf")).unwrap());
+
+    for w in [100, 400, 700, 900] {
+        let metrics = Metrics::new(16.0, 20.0);
+        let mut buffer = Buffer::new(&mut font_system, metrics);
+
+        let flags: Vec<CacheKeyFlags>;
+        {
+            let mut buffer = buffer.borrow_with(&mut font_system);
+            let attrs = Attrs::new()
+                .family(Family::Name("Inter Variable"))
+                .weight(Weight(w))
+                .synthetic_bold(SyntheticBold::new());
+            buffer.set_size(Some(300.0), Some(100.0));
+            buffer.set_text("Hello world", &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(true);
+
+            flags = buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs.iter().map(|g| g.cache_key_flags))
+                .collect();
+        }
+
+        assert!(!flags.is_empty(), "Weight {w}: no glyphs produced");
+        assert!(
+            flags.iter().all(|f| !f.contains(CacheKeyFlags::FAKE_BOLD)),
+            "Weight {w}: synthetic bold must stay disabled when the variable font provides the weight"
+        );
+    }
+}

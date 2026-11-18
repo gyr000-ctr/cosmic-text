@@ -10,7 +10,7 @@ use swash::scale::{image::Content, ScaleContext};
 use swash::scale::{Render, Source, StrikeWith};
 use swash::zeno::{Format, Vector};
 
-use crate::{CacheKey, CacheKeyFlags, Color, FontSystem, HashMap};
+use crate::{CacheKey, CacheKeyFlags, Color, FontSystem, HashMap, SyntheticBoldError};
 
 pub use swash::scale::image::{Content as SwashContent, Image as SwashImage};
 pub use swash::zeno::{Angle, Command, Placement, Transform};
@@ -19,10 +19,10 @@ fn swash_image(
     font_system: &mut FontSystem,
     context: &mut ScaleContext,
     cache_key: CacheKey,
-) -> Option<SwashImage> {
+) -> Result<Option<SwashImage>, SyntheticBoldError> {
     let Some(font) = font_system.get_font(cache_key.font_id, cache_key.font_weight) else {
         log::warn!("did not find font {:?}", cache_key.font_id);
-        return None;
+        return Ok(None);
     };
 
     let variable_width = font
@@ -30,10 +30,12 @@ fn swash_image(
         .variations()
         .find_by_tag(swash::Tag::from_be_bytes(*b"wght"));
 
+    let font_size = f32::from_bits(cache_key.font_size_bits);
+
     // Build the scaler
     let mut scaler = context
         .builder(font.as_swash())
-        .size(f32::from_bits(cache_key.font_size_bits))
+        .size(font_size)
         .hint(!cache_key.flags.contains(CacheKeyFlags::DISABLE_HINTING));
     if let Some(variation) = variable_width {
         scaler = scaler.normalized_coords(font.as_swash().variations().normalized_coords([(
@@ -54,29 +56,52 @@ fn swash_image(
         Vector::new(cache_key.x_bin.as_float(), cache_key.y_bin.as_float())
     };
 
+    let synthetic_bold_strength = cache_key.flags.synthetic_bold_strength();
+
     // Select our source order
-    Render::new(&[
+    let sources = [
         // Color outline with the first palette
         Source::ColorOutline(0),
         // Color bitmap with best fit selection mode
         Source::ColorBitmap(StrikeWith::BestFit),
         // Standard scalable outline
         Source::Outline,
-    ])
-    // Select a subpixel format
-    .format(Format::Alpha)
-    // Apply the fractional offset
-    .offset(offset)
-    .transform(if cache_key.flags.contains(CacheKeyFlags::FAKE_ITALIC) {
-        Some(Transform::skew(
-            Angle::from_degrees(14.0),
-            Angle::from_degrees(0.0),
-        ))
-    } else {
-        None
-    })
+    ];
+    let mut render = Render::new(&sources);
+    render
+        // Select a subpixel format
+        .format(Format::Alpha)
+        // Apply the fractional offset
+        .offset(offset)
+        .transform(if cache_key.flags.contains(CacheKeyFlags::FAKE_ITALIC) {
+            Some(Transform::skew(
+                Angle::from_degrees(14.0),
+                Angle::from_degrees(0.0),
+            ))
+        } else {
+            None
+        });
+    if let Some(strength_em) = synthetic_bold_strength {
+        // Widen the outline stroke to synthesize bold. The strength is
+        // stored in EM units and scaled to pixels at the render size.
+        render.embolden(strength_em * font_size);
+    }
     // Render the image
-    .render(&mut scaler, cache_key.glyph_id)
+    let image = render.render(&mut scaler, cache_key.glyph_id);
+
+    if synthetic_bold_strength.is_some() {
+        let is_empty = match &image {
+            Some(image) => image.placement.width == 0 || image.placement.height == 0,
+            None => true,
+        };
+        if is_empty {
+            return Err(SyntheticBoldError::EmptyGlyph {
+                glyph_id: cache_key.glyph_id,
+            });
+        }
+    }
+
+    Ok(image)
 }
 
 fn swash_outline_commands(
@@ -121,6 +146,11 @@ fn swash_outline_commands(
         ));
     }
 
+    if let Some(strength_em) = cache_key.flags.synthetic_bold_strength() {
+        let strength_px = strength_em * f32::from_bits(cache_key.font_size_bits);
+        outline.embolden(strength_px, strength_px);
+    }
+
     // Get the path information of the outline
     let path = outline.path();
 
@@ -157,7 +187,10 @@ impl SwashCache {
         font_system: &mut FontSystem,
         cache_key: CacheKey,
     ) -> Option<SwashImage> {
-        swash_image(font_system, &mut self.context, cache_key)
+        swash_image(font_system, &mut self.context, cache_key).unwrap_or_else(|err| {
+            log::warn!("failed to render glyph {:?}: {err}", cache_key.glyph_id);
+            None
+        })
     }
 
     /// Create a swash Image from a cache key, caching results
@@ -166,9 +199,30 @@ impl SwashCache {
         font_system: &mut FontSystem,
         cache_key: CacheKey,
     ) -> &Option<SwashImage> {
-        self.image_cache
-            .entry(cache_key)
-            .or_insert_with(|| swash_image(font_system, &mut self.context, cache_key))
+        self.image_cache.entry(cache_key).or_insert_with(|| {
+            swash_image(font_system, &mut self.context, cache_key).unwrap_or_else(|err| {
+                log::warn!("failed to render glyph {:?}: {err}", cache_key.glyph_id);
+                None
+            })
+        })
+    }
+
+    /// Create a swash Image from a cache key, caching results and reporting
+    /// synthetic-bold errors (such as [`SyntheticBoldError::EmptyGlyph`])
+    /// to the caller instead of swallowing them
+    pub fn try_get_image(
+        &mut self,
+        font_system: &mut FontSystem,
+        cache_key: CacheKey,
+    ) -> Result<&Option<SwashImage>, SyntheticBoldError> {
+        if !self.image_cache.contains_key(&cache_key) {
+            let image = swash_image(font_system, &mut self.context, cache_key)?;
+            self.image_cache.insert(cache_key, image);
+        }
+        Ok(self
+            .image_cache
+            .get(&cache_key)
+            .expect("image cache entry just inserted"))
     }
 
     /// Creates outline commands
