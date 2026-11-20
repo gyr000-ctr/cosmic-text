@@ -5,8 +5,8 @@ use alloc::{string::String, vec::Vec};
 use core::mem;
 
 use crate::{
-    Align, Attrs, AttrsList, Cached, Direction, Ellipsize, FontSystem, Hinting, LayoutLine,
-    LayoutRunIter, LineEnding, ShapeLine, Shaping, Wrap,
+    Align, Attrs, AttrsList, Cached, Direction, Ellipsize, FontSystem, Hinting, Indent,
+    IndentError, LayoutLine, LayoutRunIter, LineEnding, ShapeLine, Shaping, Wrap,
 };
 
 /// A line (or paragraph) of text that is shaped and laid out
@@ -16,6 +16,7 @@ pub struct BufferLine {
     ending: LineEnding,
     attrs_list: AttrsList,
     align: Option<Align>,
+    indent: Indent,
     shape_opt: Cached<ShapeLine>,
     layout_opt: Cached<Vec<LayoutLine>>,
     shaping: Shaping,
@@ -37,6 +38,7 @@ impl BufferLine {
             ending,
             attrs_list,
             align: None,
+            indent: Indent::NONE,
             shape_opt: Cached::Empty,
             layout_opt: Cached::Empty,
             shaping,
@@ -58,6 +60,7 @@ impl BufferLine {
         self.ending = ending;
         self.attrs_list = attrs_list;
         self.align = None;
+        self.indent = Indent::NONE;
         self.shape_opt.set_unused();
         self.layout_opt.set_unused();
         self.shaping = shaping;
@@ -161,6 +164,35 @@ impl BufferLine {
         }
     }
 
+    /// Get the paragraph indentation.
+    pub const fn indent(&self) -> Indent {
+        self.indent
+    }
+
+    /// Set the paragraph indentation, validating only the value ranges.
+    ///
+    /// Only negative or non-finite values are rejected here; whether the
+    /// indentation fits the paragraph width can only be checked by the buffer,
+    /// which owns the width. Use [`crate::Buffer::set_indent`] to validate
+    /// against the current width as well.
+    ///
+    /// Will reset layout if it differs from the current indentation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndentError::Negative`] if either value is negative, NaN, or
+    /// otherwise non-finite. In that case the line is left unchanged.
+    pub fn set_indent(&mut self, indent: Indent) -> Result<bool, IndentError> {
+        indent.validate(None)?;
+        if indent != self.indent {
+            self.indent = indent;
+            self.reset_layout();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Append line at end of this line
     ///
     /// The wrap setting of the appended line will be lost
@@ -196,6 +228,9 @@ impl BufferLine {
         // To preserve line endings, it moves to the new line
         self.ending = LineEnding::None;
         new.align = self.align;
+        // The split-off text continues the same paragraph until it is
+        // separated by an inserted line ending, so keep the indentation.
+        new.indent = self.indent;
         new
     }
 
@@ -283,6 +318,7 @@ impl BufferLine {
                 wrap,
                 ellipsize,
                 align,
+                self.indent,
                 &mut layout,
                 match_mono_width,
                 hinting,
@@ -322,6 +358,7 @@ impl BufferLine {
             ending: LineEnding::None,
             attrs_list: AttrsList::new(&Attrs::new()),
             align: None,
+            indent: Indent::NONE,
             shape_opt: Cached::Empty,
             layout_opt: Cached::Empty,
             shaping: Shaping::Advanced,

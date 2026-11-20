@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 use core_maths::CoreFloat;
-
 /// A laid out glyph
 #[derive(Clone, Debug)]
 pub struct LayoutGlyph {
@@ -246,3 +245,160 @@ pub enum Hinting {
     /// resolution.
     Enabled,
 }
+
+/// Paragraph indentation, in pixels.
+///
+/// Indentation applies per logical paragraph (a [`crate::BufferLine`]): the
+/// first visual line uses `first_line`, while every soft-wrapped continuation
+/// line uses `hanging`. Soft wraps therefore never repeat the first-line
+/// indent.
+///
+/// For LTR paragraphs a positive value shifts the affected line's start edge
+/// to the right; for RTL paragraphs it shifts the start edge to the left. The
+/// shift is mirrored automatically, so the same value gives the typographically
+/// correct result in both directions.
+///
+/// Both values must be finite and non-negative. Indentation is validated with
+/// [`Indent::validate`]; use [`crate::BufferLine::set_indent`] and
+/// [`crate::Buffer::set_indent`] to apply it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Indent {
+    /// Extra indentation of the first visual line of the paragraph, in pixels.
+    pub first_line: f32,
+    /// Indentation of every soft-wrapped continuation line, in pixels.
+    pub hanging: f32,
+}
+
+impl Indent {
+    /// No indentation.
+    pub const NONE: Self = Self {
+        first_line: 0.0,
+        hanging: 0.0,
+    };
+
+    /// Create an indentation descriptor.
+    ///
+    /// The values are not validated here; pass the result to
+    /// [`Self::validate`] (or to a setter that validates) before use.
+    pub const fn new(first_line: f32, hanging: f32) -> Self {
+        Self {
+            first_line,
+            hanging,
+        }
+    }
+
+    /// Indentation with only a first-line indent.
+    pub const fn first_line(first_line: f32) -> Self {
+        Self {
+            first_line,
+            hanging: 0.0,
+        }
+    }
+
+    /// Indentation with only a hanging indent.
+    pub const fn hanging(hanging: f32) -> Self {
+        Self {
+            first_line: 0.0,
+            hanging,
+        }
+    }
+
+    /// True if neither field moves any line.
+    pub const fn is_zero(&self) -> bool {
+        self.first_line == 0.0 && self.hanging == 0.0
+    }
+
+    /// Validate the values against an optional paragraph width.
+    ///
+    /// `width_opt` is the available text width (`None` means the paragraph is
+    /// not width-constrained).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndentError::Negative`] if either value is negative, NaN, or
+    /// otherwise non-finite, and [`IndentError::TooWide`] if the indentation
+    /// of the first line or of a continuation line would leave no room for
+    /// text within `width_opt`.
+    pub fn validate(&self, width_opt: Option<f32>) -> Result<(), IndentError> {
+        if !self.first_line.is_finite() || !self.hanging.is_finite() {
+            return Err(IndentError::Negative {
+                first_line: self.first_line,
+                hanging: self.hanging,
+            });
+        }
+        if self.first_line < 0.0 || self.hanging < 0.0 {
+            return Err(IndentError::Negative {
+                first_line: self.first_line,
+                hanging: self.hanging,
+            });
+        }
+        // Zero indentation is always valid, including on a zero-width buffer.
+        if self.is_zero() {
+            return Ok(());
+        }
+        if let Some(width) = width_opt {
+            if self.first_line >= width || self.hanging >= width {
+                return Err(IndentError::TooWide {
+                    indent: *self,
+                    width,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Start-edge shift of the line at visual index `line_index` within the
+    /// paragraph. Positive for an outward (start-edge) shift.
+    pub(crate) fn line_shift(&self, line_index: usize) -> f32 {
+        if line_index == 0 {
+            self.first_line
+        } else {
+            self.hanging
+        }
+    }
+}
+
+/// An error returned when paragraph indentation is invalid.
+///
+/// The two variants distinguish an out-of-range value (negative or non-finite
+/// indentation) from an indentation that does not fit inside the paragraph
+/// width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IndentError {
+    /// At least one indentation value is negative or not finite.
+    Negative {
+        /// The rejected first-line value.
+        first_line: f32,
+        /// The rejected hanging value.
+        hanging: f32,
+    },
+    /// The indentation leaves no room for text within the paragraph width.
+    TooWide {
+        /// The indentation that was rejected.
+        indent: Indent,
+        /// The paragraph width it did not fit into.
+        width: f32,
+    },
+}
+
+impl core::fmt::Display for IndentError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Negative {
+                first_line,
+                hanging,
+            } => write!(
+                f,
+                "indentation values must be finite and non-negative, got first_line={first_line}, hanging={hanging}"
+            ),
+            Self::TooWide { indent, width } => write!(
+                f,
+                "indentation (first_line={}, hanging={}) must be smaller than the paragraph width {width}",
+                indent.first_line, indent.hanging
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for IndentError {}

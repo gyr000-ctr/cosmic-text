@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Paragraph indentation: `Indent` with separate first-line and hanging indents,
+  applied per logical paragraph so soft-wrapped lines are not re-indented.
+  Available through `Buffer::set_indent`, `BufferLine::set_indent`, and
+  `Indent::validate`; negative/non-finite values and indents wider than the
+  paragraph width are reported via the distinguishable `IndentError` variants.
+
 ## [0.19.0] - 2026-04-22
 
 ### Fixed

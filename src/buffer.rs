@@ -11,9 +11,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     render_decoration, Affinity, Align, Attrs, AttrsList, BidiParagraphs, BorrowedWithFontSystem,
-    BufferLine, Color, Cursor, DecorationSpan, Direction, Ellipsize, FontSystem, Hinting,
-    LayoutCursor, LayoutGlyph, LayoutLine, LineEnding, LineIter, Motion, Renderer, Scroll,
-    ShapeLine, Shaping, Wrap,
+    BufferLine, Color, Cursor, DecorationSpan, Direction, Ellipsize, FontSystem, Hinting, Indent,
+    IndentError, LayoutCursor, LayoutGlyph, LayoutLine, LineEnding, LineIter, Motion, Renderer,
+    Scroll, ShapeLine, Shaping, Wrap,
 };
 
 bitflags::bitflags! {
@@ -839,6 +839,41 @@ impl Buffer {
             self.dirty |= DirtyFlags::DIRECTION;
             self.redraw = true;
         }
+    }
+
+    /// Set paragraph indentation on every line (paragraph) in the buffer.
+    ///
+    /// The values are validated against the current buffer width, so an
+    /// indentation that leaves no room for text is rejected rather than laid
+    /// out. On error no line is modified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndentError::Negative`] for a negative or non-finite value,
+    /// and [`IndentError::TooWide`] when the buffer has a width and either
+    /// indentation value is greater than or equal to it.
+    pub fn set_indent(&mut self, indent: Indent) -> Result<(), IndentError> {
+        indent.validate(self.width_opt)?;
+        let mut changed = false;
+        for line in &mut self.lines {
+            changed |= line.set_indent(indent)?;
+        }
+        if changed {
+            self.redraw = true;
+        }
+        Ok(())
+    }
+
+    /// Validate `indent` against the current buffer width without applying it.
+    ///
+    /// This is useful after changing the buffer size with [`Self::set_size`],
+    /// since a previously valid indentation may no longer fit.
+    ///
+    /// # Errors
+    ///
+    /// See [`Indent::validate`].
+    pub fn validate_indent(&self, indent: Indent) -> Result<(), IndentError> {
+        indent.validate(self.width_opt)
     }
 
     /// Get the current buffer dimensions (width, height)
@@ -1719,6 +1754,18 @@ impl BorrowedWithFontSystem<'_, Buffer> {
     /// Set the base [`Direction`] used when shaping text.
     pub fn set_direction(&mut self, direction: Direction) {
         self.inner.set_direction(direction);
+    }
+
+    /// Set paragraph indentation on every line (paragraph) in the buffer.
+    ///
+    /// See [`Buffer::set_indent`] for the validation rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`IndentError`] if the indentation is negative or does not
+    /// fit the current buffer width.
+    pub fn set_indent(&mut self, indent: Indent) -> Result<(), IndentError> {
+        self.inner.set_indent(indent)
     }
 
     /// Set the current [`Ellipsize`].

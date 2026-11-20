@@ -325,14 +325,16 @@ impl<'buffer> Edit<'buffer> for Editor<'buffer> {
             while cursor.line >= buffer.lines.len() {
                 // Get last line ending
                 let mut last_ending = LineEnding::None;
+                let mut last_indent = crate::Indent::NONE;
                 if let Some(last_line) = buffer.lines.last_mut() {
                     last_ending = last_line.ending();
+                    last_indent = last_line.indent();
                     // Ensure a valid line ending is always set on interior lines
                     if last_ending == LineEnding::None {
                         last_line.set_ending(LineEnding::default());
                     }
                 }
-                let line = BufferLine::new(
+                let mut line = BufferLine::new(
                     String::new(),
                     last_ending,
                     AttrsList::new(&attrs_list.as_ref().map_or_else(
@@ -346,11 +348,15 @@ impl<'buffer> Edit<'buffer> for Editor<'buffer> {
                     )),
                     Shaping::Advanced,
                 );
+                let _ = line.set_indent(last_indent);
                 buffer.lines.push(line);
             }
 
             let line: &mut BufferLine = &mut buffer.lines[cursor.line];
             let insert_line = cursor.line + 1;
+            // Paragraph formatting carried over to every line created by the
+            // inserted line breaks.
+            let line_indent = line.indent();
 
             // Collect text after insertion as a line
             let after: BufferLine = line.split_off(cursor.index);
@@ -392,6 +398,9 @@ impl<'buffer> Edit<'buffer> for Editor<'buffer> {
                     final_attrs.split_off(remaining_split_len),
                     Shaping::Advanced,
                 );
+                // A line break continues the same paragraph formatting, so keep
+                // its indentation (the same as `split_off` does for `after`).
+                let _ = tmp.set_indent(line_indent);
                 tmp.append(&after);
                 buffer.lines.insert(insert_line, tmp);
                 cursor.line += 1;
@@ -402,12 +411,13 @@ impl<'buffer> Edit<'buffer> for Editor<'buffer> {
             for (range, ending) in lines_iter.rev() {
                 let data_line = &data[range];
                 remaining_split_len -= data_line.len() + ending.as_str().len();
-                let tmp = BufferLine::new(
+                let mut tmp = BufferLine::new(
                     data_line,
                     ending,
                     final_attrs.split_off(remaining_split_len),
                     Shaping::Advanced,
                 );
+                let _ = tmp.set_indent(line_indent);
                 buffer.lines.insert(insert_line, tmp);
                 cursor.line += 1;
             }

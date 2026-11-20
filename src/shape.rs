@@ -6,7 +6,7 @@ use crate::fallback::FontFallbackIter;
 use crate::{
     math, Align, Attrs, AttrsList, CacheKeyFlags, Color, DecorationMetrics, DecorationSpan,
     Ellipsize, EllipsizeHeightLimit, Family, Font, FontSystem, GlyphDecorationData, HashSet,
-    Hinting, LayoutGlyph, LayoutLine, Metrics, Wrap,
+    Hinting, Indent, LayoutGlyph, LayoutLine, Metrics, Wrap,
 };
 #[cfg(not(feature = "std"))]
 use alloc::{format, vec, vec::Vec};
@@ -1613,6 +1613,7 @@ impl ShapeLine {
             wrap,
             Ellipsize::None,
             align,
+            Indent::NONE,
             &mut lines,
             match_mono_width,
             hinting,
@@ -2337,10 +2338,23 @@ impl ShapeLine {
         wrap: Wrap,
         ellipsize: Ellipsize,
         align: Option<Align>,
+        indent: Indent,
         layout_lines: &mut Vec<LayoutLine>,
         match_mono_width: Option<f32>,
         hinting: Hinting,
     ) {
+        // The width still available for glyphs on each visual line after the
+        // paragraph's first-line or hanging indent has been reserved. `None`
+        // means the paragraph is not width-constrained.
+        let line_width_limit = |line_index: usize| -> Option<f32> {
+            width_opt.map(|width| {
+                let reserved = indent.line_shift(line_index);
+                // Defensive: callers validate with `Indent::validate`; clamp so
+                // an unvalidated value can never produce a negative limit.
+                (width - reserved).max(0.0)
+            })
+        };
+
         // For each visual line a list of  (span index,  and range of words in that span)
         // Note that a BiDi visual line could have multiple spans or parts of them
         // let mut vl_range_of_spans = Vec::with_capacity(1);
@@ -2373,7 +2387,7 @@ impl ShapeLine {
                 &self.spans,
                 None,
                 self.rtl,
-                width_opt,
+                line_width_limit(0),
                 ellipsize,
             );
         } else {
@@ -2400,7 +2414,7 @@ impl ShapeLine {
                                            current_visual_line: &mut VisualLine,
                                            font_size: f32,
                                            start_opt: Option<SpanWordGlyphPos>,
-                                           width_opt: Option<f32>,
+                                           line_limit: Option<f32>,
                                            ellipsize: Ellipsize|
              -> bool {
                 // If Ellipsize::End, then how many lines can we fit or how much is the available height
@@ -2415,7 +2429,7 @@ impl ShapeLine {
                         &self.spans,
                         start_opt,
                         self.rtl,
-                        width_opt,
+                        line_limit,
                         ellipsize,
                     );
                     return true;
@@ -2429,13 +2443,16 @@ impl ShapeLine {
                 &mut current_visual_line,
                 font_size,
                 None,
-                width_opt,
+                line_width_limit(0),
                 ellipsize,
             ) {
                 'outer: for (span_index, span) in self.spans.iter().enumerate() {
                     let mut word_range_width = 0.;
                     let mut width_before_last_blank = 0.;
                     let mut number_of_blanks: u32 = 0;
+                    // Width available on the visual line currently being filled,
+                    // i.e. the paragraph width minus that line's indentation.
+                    let mut current_limit = line_width_limit(total_line_count);
 
                     // Create the word ranges that fits in a visual line
                     if self.rtl != span.level.is_rtl() {
@@ -2447,11 +2464,11 @@ impl ShapeLine {
                             // relayouts with that width as the `line_width` will produce the same
                             // wrapping results.
                             if current_visual_line.w + (word_range_width + word_width)
-                            <= width_opt.unwrap_or(f32::INFINITY)
+                            <= current_limit.unwrap_or(f32::INFINITY)
                             // Include one blank word over the width limit since it won't be
                             // counted in the final width
                             || (word.blank
-                                && (current_visual_line.w + word_range_width) <= width_opt.unwrap_or(f32::INFINITY))
+                                && (current_visual_line.w + word_range_width) <= current_limit.unwrap_or(f32::INFINITY))
                             {
                                 // fits
                                 if word.blank {
@@ -2461,12 +2478,12 @@ impl ShapeLine {
                                 word_range_width += word_width;
                             } else if wrap == Wrap::Glyph
                             // Make sure that the word is able to fit on it's own line, if not, fall back to Glyph wrapping.
-                            || (wrap == Wrap::WordOrGlyph && word_width > width_opt.unwrap_or(f32::INFINITY))
+                            || (wrap == Wrap::WordOrGlyph && word_width > current_limit.unwrap_or(f32::INFINITY))
                             {
                                 // Commit the current line so that the word starts on the next line.
                                 if word_range_width > 0.
                                     && wrap == Wrap::WordOrGlyph
-                                    && word_width > width_opt.unwrap_or(f32::INFINITY)
+                                    && word_width > current_limit.unwrap_or(f32::INFINITY)
                                 {
                                     self.add_to_visual_line(
                                         &mut current_visual_line,
@@ -2486,6 +2503,7 @@ impl ShapeLine {
 
                                     fitting_start = WordGlyphPos::new(i, 0);
                                     total_line_count += 1;
+                                    current_limit = line_width_limit(total_line_count);
                                     total_line_height += line_height;
                                     if try_ellipsize_last_line(
                                         total_line_count,
@@ -2496,7 +2514,7 @@ impl ShapeLine {
                                             span_index,
                                             fitting_start,
                                         )),
-                                        width_opt,
+                                        current_limit,
                                         ellipsize,
                                     ) {
                                         break 'outer;
@@ -2506,7 +2524,7 @@ impl ShapeLine {
                                 for (glyph_i, glyph) in word.glyphs.iter().enumerate().rev() {
                                     let glyph_width = glyph.width(font_size);
                                     if current_visual_line.w + (word_range_width + glyph_width)
-                                        <= width_opt.unwrap_or(f32::INFINITY)
+                                        <= current_limit.unwrap_or(f32::INFINITY)
                                     {
                                         word_range_width += glyph_width;
                                     } else {
@@ -2526,6 +2544,7 @@ impl ShapeLine {
                                         word_range_width = glyph_width;
                                         fitting_start = WordGlyphPos::new(i, glyph_i + 1);
                                         total_line_count += 1;
+                                        current_limit = line_width_limit(total_line_count);
                                         total_line_height += line_height;
                                         if try_ellipsize_last_line(
                                             total_line_count,
@@ -2536,7 +2555,7 @@ impl ShapeLine {
                                                 span_index,
                                                 fitting_start,
                                             )),
-                                            width_opt,
+                                            current_limit,
                                             ellipsize,
                                         ) {
                                             break 'outer;
@@ -2585,6 +2604,7 @@ impl ShapeLine {
                                         cached_visual_lines.pop().unwrap_or_default();
                                     number_of_blanks = 0;
                                     total_line_count += 1;
+                                    current_limit = line_width_limit(total_line_count);
                                     total_line_height += line_height;
 
                                     if try_ellipsize_last_line(
@@ -2600,7 +2620,7 @@ impl ShapeLine {
                                                 WordGlyphPos::new(i + 1, 0)
                                             },
                                         )),
-                                        width_opt,
+                                        current_limit,
                                         ellipsize,
                                     ) {
                                         break 'outer;
@@ -2630,11 +2650,11 @@ impl ShapeLine {
                         for (i, word) in span.words.iter().enumerate() {
                             let word_width = word.width(font_size);
                             if current_visual_line.w + (word_range_width + word_width)
-                            <= width_opt.unwrap_or(f32::INFINITY)
+                            <= current_limit.unwrap_or(f32::INFINITY)
                             // Include one blank word over the width limit since it won't be
                             // counted in the final width.
                             || (word.blank
-                                && (current_visual_line.w + word_range_width) <= width_opt.unwrap_or(f32::INFINITY))
+                                && (current_visual_line.w + word_range_width) <= current_limit.unwrap_or(f32::INFINITY))
                             {
                                 // fits
                                 if word.blank {
@@ -2644,12 +2664,12 @@ impl ShapeLine {
                                 word_range_width += word_width;
                             } else if wrap == Wrap::Glyph
                             // Make sure that the word is able to fit on it's own line, if not, fall back to Glyph wrapping.
-                            || (wrap == Wrap::WordOrGlyph && word_width > width_opt.unwrap_or(f32::INFINITY))
+                            || (wrap == Wrap::WordOrGlyph && word_width > current_limit.unwrap_or(f32::INFINITY))
                             {
                                 // Commit the current line so that the word starts on the next line.
                                 if word_range_width > 0.
                                     && wrap == Wrap::WordOrGlyph
-                                    && word_width > width_opt.unwrap_or(f32::INFINITY)
+                                    && word_width > current_limit.unwrap_or(f32::INFINITY)
                                 {
                                     self.add_to_visual_line(
                                         &mut current_visual_line,
@@ -2669,6 +2689,7 @@ impl ShapeLine {
 
                                     fitting_start = WordGlyphPos::new(i, 0);
                                     total_line_count += 1;
+                                    current_limit = line_width_limit(total_line_count);
                                     total_line_height += line_height;
                                     if try_ellipsize_last_line(
                                         total_line_count,
@@ -2679,7 +2700,7 @@ impl ShapeLine {
                                             span_index,
                                             fitting_start,
                                         )),
-                                        width_opt,
+                                        current_limit,
                                         ellipsize,
                                     ) {
                                         break 'outer;
@@ -2689,7 +2710,7 @@ impl ShapeLine {
                                 for (glyph_i, glyph) in word.glyphs.iter().enumerate() {
                                     let glyph_width = glyph.width(font_size);
                                     if current_visual_line.w + (word_range_width + glyph_width)
-                                        <= width_opt.unwrap_or(f32::INFINITY)
+                                        <= current_limit.unwrap_or(f32::INFINITY)
                                     {
                                         word_range_width += glyph_width;
                                     } else {
@@ -2709,6 +2730,7 @@ impl ShapeLine {
                                         word_range_width = glyph_width;
                                         fitting_start = WordGlyphPos::new(i, glyph_i);
                                         total_line_count += 1;
+                                        current_limit = line_width_limit(total_line_count);
                                         total_line_height += line_height;
                                         if try_ellipsize_last_line(
                                             total_line_count,
@@ -2719,7 +2741,7 @@ impl ShapeLine {
                                                 span_index,
                                                 fitting_start,
                                             )),
-                                            width_opt,
+                                            current_limit,
                                             ellipsize,
                                         ) {
                                             break 'outer;
@@ -2763,6 +2785,7 @@ impl ShapeLine {
                                         cached_visual_lines.pop().unwrap_or_default();
                                     number_of_blanks = 0;
                                     total_line_count += 1;
+                                    current_limit = line_width_limit(total_line_count);
                                     total_line_height += line_height;
                                     if try_ellipsize_last_line(
                                         total_line_count,
@@ -2773,7 +2796,7 @@ impl ShapeLine {
                                             span_index,
                                             WordGlyphPos::new(i, 0),
                                         )),
-                                        width_opt,
+                                        current_limit,
                                         ellipsize,
                                     ) {
                                         break 'outer;
@@ -2837,20 +2860,32 @@ impl ShapeLine {
             let mut y = 0.;
             let mut max_ascent: f32 = 0.;
             let mut max_descent: f32 = 0.;
-            let alignment_correction = match (align, self.rtl) {
-                (Align::Left, true) => (line_width - visual_line.w).max(0.),
-                (Align::Left, false) => 0.,
-                (Align::Right, true) => 0.,
-                (Align::Right, false) => (line_width - visual_line.w).max(0.),
-                (Align::Center, _) => (line_width - visual_line.w).max(0.) / 2.0,
-                (Align::End, _) => (line_width - visual_line.w).max(0.),
-                (Align::Justified, _) => 0.,
+            // The indent reserves `indent_shift` pixels at the line's start
+            // edge, leaving a content box of `content_width`. Alignment is
+            // resolved inside that box so that, e.g., a right-aligned line
+            // stays within the text width instead of being pushed past it.
+            // `origin_shift` is the distance of the first glyph from the
+            // paragraph's start edge (left for LTR, right for RTL).
+            let indent_shift = indent.line_shift(index);
+            let content_width = (line_width - indent_shift).max(0.0);
+            let slack = (content_width - visual_line.w).max(0.);
+            let origin_shift = match (align, self.rtl) {
+                // Natural alignment: the content starts at the indented edge.
+                (Align::Left, false) | (Align::Right, true) => indent_shift,
+                // The content is pushed towards the end edge of the content box.
+                (Align::Right, false) | (Align::Left, true) | (Align::End, _) => {
+                    indent_shift + slack
+                }
+                (Align::Center, _) => indent_shift + slack / 2.0,
+                // Justified lines fill the whole content box from the start edge.
+                (Align::Justified, _) => indent_shift,
             };
 
             if self.rtl {
-                x -= alignment_correction;
+                // x starts at the right edge and decreases while glyphs are placed.
+                x -= origin_shift;
             } else {
-                x += alignment_correction;
+                x += origin_shift;
             }
 
             if hinting == Hinting::Enabled {
@@ -2872,12 +2907,14 @@ impl ShapeLine {
             //  still be expanded)
 
             // Amount of extra width added to each blank space within a line.
+            // The line must fill the indented content box, not the whole
+            // paragraph width, so justify against `content_width`.
             let justification_expansion = if matches!(align, Align::Justified)
                 && visual_line.spaces > 0
                 // Don't justify the last line in a paragraph.
                 && index != number_of_visual_lines - 1
             {
-                (line_width - visual_line.w) / visual_line.spaces as f32
+                (content_width - visual_line.w) / visual_line.spaces as f32
             } else {
                 0.
             };
